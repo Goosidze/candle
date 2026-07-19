@@ -571,9 +571,7 @@ impl BackendDevice for CudaDevice {
                 )
             }
         };
-        Ok(CudaStorage {
-            slice,
-            device: self.clone(),
+        Ok(CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: self.clone(),
         })
     }
 
@@ -619,9 +617,7 @@ impl BackendDevice for CudaDevice {
             let layout = Layout::contiguous(shape);
             super::Affine(up - lo, lo).map(&slice, self, &layout)?
         };
-        Ok(CudaStorage {
-            slice,
-            device: self.clone(),
+        Ok(CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: self.clone(),
         })
     }
 
@@ -670,9 +666,7 @@ impl BackendDevice for CudaDevice {
                 .w()?
             }
         };
-        Ok(CudaStorage {
-            slice,
-            device: self.clone(),
+        Ok(CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: self.clone(),
         })
     }
 
@@ -725,9 +719,7 @@ impl BackendDevice for CudaDevice {
                 )
             }
         };
-        Ok(CudaStorage {
-            slice,
-            device: self.clone(),
+        Ok(CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: self.clone(),
         })
     }
 
@@ -784,9 +776,7 @@ impl BackendDevice for CudaDevice {
                 .into());
             }
         };
-        Ok(CudaStorage {
-            slice,
-            device: self.clone(),
+        Ok(CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: self.clone(),
         })
     }
 
@@ -843,9 +833,7 @@ impl BackendDevice for CudaDevice {
                 .into());
             }
         };
-        Ok(CudaStorage {
-            slice,
-            device: self.clone(),
+        Ok(CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: self.clone(),
         })
     }
 
@@ -902,9 +890,7 @@ impl BackendDevice for CudaDevice {
                 .into());
             }
         };
-        Ok(CudaStorage {
-            slice,
-            device: self.clone(),
+        Ok(CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: self.clone(),
         })
     }
 
