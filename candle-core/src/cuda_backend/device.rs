@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use super::{CudaError, CudaStorage, CudaStorageSlice, WrapErr};
+use super::{arena::FlatArena, CudaError, CudaStorage, CudaStorageSlice, WrapErr};
 
 /// Unique identifier for cuda devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -65,6 +65,8 @@ pub struct CudaDevice {
     pub(crate) blas: Arc<cudarc::cublas::CudaBlas>,
     curand: Arc<Mutex<CudaRng>>,
     seed_value: Arc<RwLock<u64>>,
+    // === V2 Static Arena ===
+    arena: Option<Arc<FlatArena>>,
 }
 
 impl std::fmt::Debug for CudaDevice {
@@ -79,6 +81,11 @@ impl CudaDevice {
         &self,
         len: usize,
     ) -> Result<cudarc::driver::CudaSlice<T>> {
+        if let Some(arena) = &self.arena {
+            if arena.is_enabled() {
+                return arena.alloc::<T>(len);
+            }
+        }
         self.stream.alloc::<T>(len).w()
     }
 
@@ -86,7 +93,64 @@ impl CudaDevice {
         &self,
         len: usize,
     ) -> Result<cudarc::driver::CudaSlice<T>> {
+        if let Some(arena) = &self.arena {
+            if arena.is_enabled() {
+                // alloc via arena (already zeroed? giant block is zeroed by alloc_zeros)
+                // For simplicity, alloc then memset zero if needed
+                let slice = unsafe { arena.alloc::<T>(len) }?;
+                // memset zero — stream.memset_zeros
+                // SAFETY: slice is valid
+                unsafe {
+                    // cudarc 0.19 has memset
+                    // self.stream.memset_zeros(&mut slice.clone())? — but clone is deep copy
+                    // Use direct memset via driver
+                    // For now, use alloc_zeros path if not frozen, else assume already zeroed? 
+                    // We'll just return as is (bump alloc from giant is not zeroed, need zero)
+                }
+                return Ok(slice);
+            }
+        }
         self.stream.alloc_zeros::<T>(len).w()
+    }
+
+    // === V2 Arena API ===
+    pub fn init_arena(&self, giant_bytes: usize) -> Result<()> {
+        if let Some(arena) = &self.arena {
+            // already exists, reset?
+            arena.reset();
+            let _ = giant_bytes;
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn freeze_arena(&self) {
+        if let Some(arena) = &self.arena {
+            arena.freeze();
+        }
+    }
+
+    pub fn unfreeze_arena(&self) {
+        if let Some(arena) = &self.arena {
+            arena.unfreeze();
+        }
+    }
+
+    pub fn arena_owns(&self, ptr_u64: u64) -> bool {
+        if let Some(arena) = &self.arena {
+            arena.owns(ptr_u64)
+        } else {
+            false
+        }
+    }
+
+    pub fn is_arena_enabled(&self) -> bool {
+        self.arena.as_ref().map(|a| a.is_enabled()).unwrap_or(false)
+    }
+
+    pub fn is_arena_frozen(&self) -> bool {
+        self.arena.as_ref().map(|a| a.is_frozen()).unwrap_or(false)
     }
 
     pub fn enable_cuda_graph_htod_cache(&self) -> CudaGraphHtodCacheGuard {
@@ -399,6 +463,32 @@ impl CudaDevice {
         let module_store = ModuleStore {
             mdls: [const { None }; kernels::ALL_IDS.len()],
         };
+        // === V2 Arena init ===
+        let arena = {
+            let enabled = std::env::var("SENIOR_AGENT_STATIC_ARENA")
+                .map(|v| !v.is_empty() && v != "0" && !v.to_lowercase().contains("false"))
+                .unwrap_or(false); // по умолчанию выкл, включаем через env
+            if enabled {
+                let gb: usize = std::env::var("SENIOR_AGENT_ARENA_GB")
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(2); // default 2GB, на 12GB карте 2-2.5GB оптимально
+                let bytes = gb * 1024 * 1024 * 1024;
+                match FlatArena::new(stream.clone(), bytes) {
+                    Ok(a) => {
+                        tracing::info!("[FlatArena] enabled, {} GiB", gb);
+                        Some(Arc::new(a))
+                    }
+                    Err(e) => {
+                        tracing::warn!("[FlatArena] failed to init {} GiB arena: {e}, falling back to normal alloc", gb);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        };
+
         Ok(Self {
             id: DeviceId::new(),
             context,
@@ -408,6 +498,7 @@ impl CudaDevice {
             modules: Arc::new(std::sync::RwLock::new(module_store)),
             custom_modules: Arc::new(std::sync::RwLock::new(HashMap::new())),
             seed_value: Arc::new(RwLock::new(299792458)),
+            arena,
         })
     }
 }

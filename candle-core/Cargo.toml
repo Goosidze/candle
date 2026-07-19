@@ -47,6 +47,7 @@ criterion = { workspace = true }
 
 [features]
 default = []
+static-arena = []
 cuda = ["cudarc", "dep:candle-kernels", "candle-ug?/cuda"]
 cudnn = ["cuda", "cudarc/cudnn"]
 nccl = ["cuda", "cudarc/nccl"]

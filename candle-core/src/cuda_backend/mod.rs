@@ -18,6 +18,7 @@ pub mod cudnn;
 mod device;
 mod error;
 mod utils;
+pub mod arena;
 pub use device::{CudaDevice, DeviceId};
 pub use error::{CudaError, WrapErr};
 pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
@@ -98,21 +99,45 @@ impl SlicePtrOrNull<usize> {
 
 #[derive(Debug)]
 pub enum CudaStorageSlice {
-    U8(CudaSlice<u8>),
-    U32(CudaSlice<u32>),
-    I16(CudaSlice<i16>),
-    I32(CudaSlice<i32>),
-    I64(CudaSlice<i64>),
-    BF16(CudaSlice<bf16>),
-    F16(CudaSlice<f16>),
-    F32(CudaSlice<f32>),
-    F64(CudaSlice<f64>),
-    F8E4M3(CudaSlice<float8::F8E4M3>),
+    U8(std::mem::ManuallyDrop<CudaSlice<u8>>),
+    U32(std::mem::ManuallyDrop<CudaSlice<u32>>),
+    I16(std::mem::ManuallyDrop<CudaSlice<i16>>),
+    I32(std::mem::ManuallyDrop<CudaSlice<i32>>),
+    I64(std::mem::ManuallyDrop<CudaSlice<i64>>),
+    BF16(std::mem::ManuallyDrop<CudaSlice<bf16>>),
+    F16(std::mem::ManuallyDrop<CudaSlice<f16>>),
+    F32(std::mem::ManuallyDrop<CudaSlice<f32>>),
+    F64(std::mem::ManuallyDrop<CudaSlice<f64>>),
+    F8E4M3(std::mem::ManuallyDrop<CudaSlice<float8::F8E4M3>>),
     // Dummy types that store raw bytes
-    F6E2M3(CudaSlice<u8>),
-    F6E3M2(CudaSlice<u8>),
-    F4(CudaSlice<u8>),
-    F8E8M0(CudaSlice<u8>),
+    F6E2M3(std::mem::ManuallyDrop<CudaSlice<u8>>),
+    F6E3M2(std::mem::ManuallyDrop<CudaSlice<u8>>),
+    F4(std::mem::ManuallyDrop<CudaSlice<u8>>),
+    F8E8M0(std::mem::ManuallyDrop<CudaSlice<u8>>),
+}
+
+impl CudaStorageSlice {
+    fn device_ptr_u64(&self) -> u64 {
+        // SAFETY: CudaSlice first field is cu_device_ptr (u64)
+        // We read it via unsafe transmute of reference
+        unsafe {
+            match self {
+                Self::U8(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<u8>> as *const CudaSlice<u8> as *const u64),
+                Self::U32(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<u32>> as *const CudaSlice<u32> as *const u64),
+                Self::I16(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<i16>> as *const CudaSlice<i16> as *const u64),
+                Self::I32(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<i32>> as *const CudaSlice<i32> as *const u64),
+                Self::I64(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<i64>> as *const CudaSlice<i64> as *const u64),
+                Self::BF16(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<bf16>> as *const CudaSlice<bf16> as *const u64),
+                Self::F16(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<f16>> as *const CudaSlice<f16> as *const u64),
+                Self::F32(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<f32>> as *const CudaSlice<f32> as *const u64),
+                Self::F64(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<f64>> as *const CudaSlice<f64> as *const u64),
+                Self::F8E4M3(s) => std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<float8::F8E4M3>> as *const CudaSlice<float8::F8E4M3> as *const u64),
+                Self::F6E2M3(s) | Self::F6E3M2(s) | Self::F4(s) | Self::F8E8M0(s) => {
+                    std::ptr::read(s as *const std::mem::ManuallyDrop<CudaSlice<u8>> as *const CudaSlice<u8> as *const u64)
+                }
+            }
+        }
+    }
 }
 
 struct Clone;
@@ -451,9 +476,9 @@ impl Map1 for IndexSelect<'_> {
     ) -> Result<CudaSlice<T>> {
         let ids_l = &self.1;
         let (name, (ids, _guard)) = match &self.0.slice {
-            CudaStorageSlice::U32(slice) => ("is_u32", slice_ptr(slice, ids_l.start_offset())),
-            CudaStorageSlice::U8(slice) => ("is_u8", slice_ptr(slice, ids_l.start_offset())),
-            CudaStorageSlice::I64(slice) => ("is_i64", slice_ptr(slice, ids_l.start_offset())),
+            CudaStorageSlice::U32(std::mem::ManuallyDrop::new(slice)) => ("is_u32", slice_ptr(slice, ids_l.start_offset())),
+            CudaStorageSlice::U8(std::mem::ManuallyDrop::new(slice)) => ("is_u8", slice_ptr(slice, ids_l.start_offset())),
+            CudaStorageSlice::I64(std::mem::ManuallyDrop::new(slice)) => ("is_i64", slice_ptr(slice, ids_l.start_offset())),
             _ => Err(CudaError::UnexpectedDType {
                 msg: "index_select ids should be u8, u32, or i64",
                 expected: DType::U32,
@@ -510,9 +535,9 @@ impl Map1 for Gather<'_> {
             None => Err(crate::Error::RequiresContiguous { op: "gather" }.bt())?,
         };
         let (name, (ids, _guard)) = match &ids.slice {
-            CudaStorageSlice::U32(slice) => ("gather_u32", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::U8(slice) => ("gather_u8", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::I64(slice) => ("gather_i64", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::U32(std::mem::ManuallyDrop::new(slice)) => ("gather_u32", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::U8(std::mem::ManuallyDrop::new(slice)) => ("gather_u8", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::I64(std::mem::ManuallyDrop::new(slice)) => ("gather_i64", slice_ptr(slice, ids_o1)),
             _ => Err(CudaError::UnexpectedDType {
                 msg: "gather ids should be u8/u32/i64",
                 expected: DType::U32,
@@ -565,9 +590,9 @@ impl Map2InPlace for IndexAdd<'_> {
             None => Err(crate::Error::RequiresContiguous { op: "index-add" }.bt())?,
         };
         let (name, (ids, _guard)) = match &ids.slice {
-            CudaStorageSlice::U32(slice) => ("ia_u32", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::I64(slice) => ("ia_i64", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::U8(slice) => ("ia_u8", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::U32(std::mem::ManuallyDrop::new(slice)) => ("ia_u32", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::I64(std::mem::ManuallyDrop::new(slice)) => ("ia_i64", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::U8(std::mem::ManuallyDrop::new(slice)) => ("ia_u8", slice_ptr(slice, ids_o1)),
             _ => Err(CudaError::UnexpectedDType {
                 msg: "index-add ids should be u8/u32/i64",
                 expected: DType::U32,
@@ -619,9 +644,9 @@ impl Map2InPlace for Scatter<'_> {
             None => Err(crate::Error::RequiresContiguous { op: "scatter" }.bt())?,
         };
         let (name, (ids, _guard)) = match &ids.slice {
-            CudaStorageSlice::U32(slice) => ("s_u32", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::I64(slice) => ("s_i64", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::U8(slice) => ("s_u8", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::U32(std::mem::ManuallyDrop::new(slice)) => ("s_u32", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::I64(std::mem::ManuallyDrop::new(slice)) => ("s_i64", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::U8(std::mem::ManuallyDrop::new(slice)) => ("s_u8", slice_ptr(slice, ids_o1)),
             _ => Err(CudaError::UnexpectedDType {
                 msg: "scatter ids should be u8/u32/i64",
                 expected: DType::U32,
@@ -671,9 +696,9 @@ impl Map2InPlace for ScatterAdd<'_> {
             None => Err(crate::Error::RequiresContiguous { op: "scatter-add" }.bt())?,
         };
         let (name, (ids, _guard)) = match &ids.slice {
-            CudaStorageSlice::U32(slice) => ("sa_u32", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::I64(slice) => ("sa_i64", slice_ptr(slice, ids_o1)),
-            CudaStorageSlice::U8(slice) => ("sa_u8", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::U32(std::mem::ManuallyDrop::new(slice)) => ("sa_u32", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::I64(std::mem::ManuallyDrop::new(slice)) => ("sa_i64", slice_ptr(slice, ids_o1)),
+            CudaStorageSlice::U8(std::mem::ManuallyDrop::new(slice)) => ("sa_u8", slice_ptr(slice, ids_o1)),
             _ => Err(CudaError::UnexpectedDType {
                 msg: "scatter-add ids should be u8/u32/i64",
                 expected: DType::U32,
@@ -1078,15 +1103,15 @@ impl Map2 for WhereCond<'_> {
     ) -> Result<CudaSlice<T>> {
         let ids_l = &self.1;
         let ((ids, _guard), name) = match &self.0.slice {
-            CudaStorageSlice::U8(slice) => {
+            CudaStorageSlice::U8(std::mem::ManuallyDrop::new(slice)) => {
                 let ptr = slice_ptr(slice, ids_l.start_offset());
                 (ptr, "where_u8")
             }
-            CudaStorageSlice::U32(slice) => {
+            CudaStorageSlice::U32(std::mem::ManuallyDrop::new(slice)) => {
                 let ptr = slice_ptr(slice, ids_l.start_offset());
                 (ptr, "where_u32")
             }
-            CudaStorageSlice::I64(slice) => {
+            CudaStorageSlice::I64(std::mem::ManuallyDrop::new(slice)) => {
                 let ptr = slice_ptr(slice, ids_l.start_offset());
                 (ptr, "where_i64")
             }
@@ -1230,6 +1255,40 @@ pub struct CudaStorage {
     pub device: CudaDevice,
 }
 
+impl Drop for CudaStorage {
+    fn drop(&mut self) {
+        // === V2 Arena free interception ===
+        // CudaStorageSlice теперь хранит ManuallyDrop<CudaSlice>, поэтому его Drop по умолчанию ничего не фришит.
+        // Мы вручную решаем: если ptr принадлежит арене — скипаем free (память живет до Drop арены).
+        // Если нет — вызываем Drop CudaSlice вручную.
+        let ptr = self.slice.device_ptr_u64();
+        if self.device.arena_owns(ptr) {
+            // Принадлежит арене — не фришим
+            // tracing::trace!("[FlatArena] skip free for arena ptr {:#x}", ptr);
+            return;
+        }
+        // Не арена — нужно освободить внутренний CudaSlice
+        unsafe {
+            match &mut self.slice {
+                CudaStorageSlice::U8(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<u8>),
+                CudaStorageSlice::U32(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<u32>),
+                CudaStorageSlice::I16(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<i16>),
+                CudaStorageSlice::I32(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<i32>),
+                CudaStorageSlice::I64(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<i64>),
+                CudaStorageSlice::BF16(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<bf16>),
+                CudaStorageSlice::F16(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<f16>),
+                CudaStorageSlice::F32(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<f32>),
+                CudaStorageSlice::F64(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<f64>),
+                CudaStorageSlice::F8E4M3(s) => std::ptr::drop_in_place(&mut **s as *mut CudaSlice<float8::F8E4M3>),
+                CudaStorageSlice::F6E2M3(s) | CudaStorageSlice::F6E3M2(s) | CudaStorageSlice::F4(s) | CudaStorageSlice::F8E8M0(s) => {
+                    std::ptr::drop_in_place(&mut **s as *mut CudaSlice<u8>)
+                }
+            }
+        }
+        // После этого ManuallyDrop останется пустым, его Drop — no-op, безопасно.
+    }
+}
+
 pub trait CudaDType: Sized {
     fn as_cuda_slice(s: &CudaStorage) -> Result<&CudaSlice<Self>>;
     fn as_cuda_slice_mut(s: &mut CudaStorage) -> Result<&mut CudaSlice<Self>>;
@@ -1241,7 +1300,7 @@ macro_rules! cuda_dtype {
         impl CudaDType for $ty {
             fn as_cuda_slice(s: &CudaStorage) -> Result<&CudaSlice<Self>> {
                 match &s.slice {
-                    CudaStorageSlice::$dtype(data) => Ok(&data),
+                    CudaStorageSlice::$dtype(data) => Ok(&*data),
                     _ => Err(crate::Error::UnexpectedDType {
                         expected: DType::$dtype,
                         got: s.dtype(),
@@ -1252,8 +1311,8 @@ macro_rules! cuda_dtype {
             }
 
             fn as_cuda_slice_mut(s: &mut CudaStorage) -> Result<&mut CudaSlice<Self>> {
-                match s.slice {
-                    CudaStorageSlice::$dtype(ref mut data) => Ok(data),
+                match &mut s.slice {
+                    CudaStorageSlice::$dtype(data) => Ok(&mut *data),
                     _ => Err(crate::Error::UnexpectedDType {
                         expected: DType::$dtype,
                         got: s.dtype(),
@@ -1264,7 +1323,7 @@ macro_rules! cuda_dtype {
             }
 
             fn wrap_cuda_slice(slice: CudaSlice<Self>, device: CudaDevice) -> CudaStorage {
-                let slice = CudaStorageSlice::$dtype(slice);
+                let slice = CudaStorageSlice::$dtype(std::mem::ManuallyDrop::new(slice));
                 CudaStorage { slice, device }
             }
         }
@@ -1300,72 +1359,72 @@ impl CudaStorage {
             DType::U8 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::U8(result)
+                CudaStorageSlice::U8(std::mem::ManuallyDrop::new(result))
             }
             DType::U32 => {
                 let cuda_slice = self.as_cuda_slice::<u32>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::U32(result)
+                CudaStorageSlice::U32(std::mem::ManuallyDrop::new(result))
             }
             DType::I16 => {
                 let cuda_slice = self.as_cuda_slice::<i16>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::I16(result)
+                CudaStorageSlice::I16(std::mem::ManuallyDrop::new(result))
             }
             DType::I32 => {
                 let cuda_slice = self.as_cuda_slice::<i32>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::I32(result)
+                CudaStorageSlice::I32(std::mem::ManuallyDrop::new(result))
             }
             DType::I64 => {
                 let cuda_slice = self.as_cuda_slice::<i64>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::I64(result)
+                CudaStorageSlice::I64(std::mem::ManuallyDrop::new(result))
             }
             DType::BF16 => {
                 let cuda_slice = self.as_cuda_slice::<bf16>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::BF16(result)
+                CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(result))
             }
             DType::F16 => {
                 let cuda_slice = self.as_cuda_slice::<f16>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::F16(result)
+                CudaStorageSlice::F16(std::mem::ManuallyDrop::new(result))
             }
             DType::F32 => {
                 let cuda_slice = self.as_cuda_slice::<f32>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::F32(result)
+                CudaStorageSlice::F32(std::mem::ManuallyDrop::new(result))
             }
             DType::F64 => {
                 let cuda_slice = self.as_cuda_slice::<f64>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::F64(result)
+                CudaStorageSlice::F64(std::mem::ManuallyDrop::new(result))
             }
             DType::F8E4M3 => {
                 let cuda_slice = self.as_cuda_slice::<float8::F8E4M3>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::F8E4M3(result)
+                CudaStorageSlice::F8E4M3(std::mem::ManuallyDrop::new(result))
             }
             DType::F6E2M3 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::F6E2M3(result)
+                CudaStorageSlice::F6E2M3(std::mem::ManuallyDrop::new(result))
             }
             DType::F6E3M2 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::F6E3M2(result)
+                CudaStorageSlice::F6E3M2(std::mem::ManuallyDrop::new(result))
             }
             DType::F4 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::F4(result)
+                CudaStorageSlice::F4(std::mem::ManuallyDrop::new(result))
             }
             DType::F8E8M0 => {
                 let cuda_slice = self.as_cuda_slice::<u8>()?;
                 let result = dst_stream.clone_dtod(cuda_slice).w()?;
-                CudaStorageSlice::F8E8M0(result)
+                CudaStorageSlice::F8E8M0(std::mem::ManuallyDrop::new(result))
             }
         };
 
@@ -1479,20 +1538,20 @@ impl BackendStorage for CudaStorage {
 
     fn dtype(&self) -> DType {
         match self.slice {
-            CudaStorageSlice::U8(_) => DType::U8,
-            CudaStorageSlice::U32(_) => DType::U32,
-            CudaStorageSlice::I16(_) => DType::I16,
-            CudaStorageSlice::I32(_) => DType::I32,
-            CudaStorageSlice::I64(_) => DType::I64,
-            CudaStorageSlice::BF16(_) => DType::BF16,
-            CudaStorageSlice::F16(_) => DType::F16,
-            CudaStorageSlice::F32(_) => DType::F32,
-            CudaStorageSlice::F64(_) => DType::F64,
-            CudaStorageSlice::F8E4M3(_) => DType::F8E4M3,
-            CudaStorageSlice::F6E2M3(_) => DType::F6E2M3,
-            CudaStorageSlice::F6E3M2(_) => DType::F6E3M2,
-            CudaStorageSlice::F4(_) => DType::F4,
-            CudaStorageSlice::F8E8M0(_) => DType::F8E8M0,
+            CudaStorageSlice::U8(std::mem::ManuallyDrop::new(_)) => DType::U8,
+            CudaStorageSlice::U32(std::mem::ManuallyDrop::new(_)) => DType::U32,
+            CudaStorageSlice::I16(std::mem::ManuallyDrop::new(_)) => DType::I16,
+            CudaStorageSlice::I32(std::mem::ManuallyDrop::new(_)) => DType::I32,
+            CudaStorageSlice::I64(std::mem::ManuallyDrop::new(_)) => DType::I64,
+            CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(_)) => DType::BF16,
+            CudaStorageSlice::F16(std::mem::ManuallyDrop::new(_)) => DType::F16,
+            CudaStorageSlice::F32(std::mem::ManuallyDrop::new(_)) => DType::F32,
+            CudaStorageSlice::F64(std::mem::ManuallyDrop::new(_)) => DType::F64,
+            CudaStorageSlice::F8E4M3(std::mem::ManuallyDrop::new(_)) => DType::F8E4M3,
+            CudaStorageSlice::F6E2M3(std::mem::ManuallyDrop::new(_)) => DType::F6E2M3,
+            CudaStorageSlice::F6E3M2(std::mem::ManuallyDrop::new(_)) => DType::F6E3M2,
+            CudaStorageSlice::F4(std::mem::ManuallyDrop::new(_)) => DType::F4,
+            CudaStorageSlice::F8E8M0(std::mem::ManuallyDrop::new(_)) => DType::F8E8M0,
         }
     }
 
@@ -1552,20 +1611,20 @@ impl BackendStorage for CudaStorage {
         // lifetime issue and is safe as long as self.slice does not go out of scope before inp
         // is used.
         let (inp, _guard) = match &self.slice {
-            CudaStorageSlice::U8(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::U32(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::I16(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::I32(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::I64(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::BF16(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::F16(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::F32(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::F64(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::F8E4M3(inp) => slice_ptr(inp, start_o),
-            CudaStorageSlice::F4(_)
-            | CudaStorageSlice::F6E2M3(_)
-            | CudaStorageSlice::F6E3M2(_)
-            | CudaStorageSlice::F8E8M0(_) => {
+            CudaStorageSlice::U8(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::U32(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::I16(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::I32(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::I64(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::F16(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::F32(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::F64(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::F8E4M3(std::mem::ManuallyDrop::new(inp)) => slice_ptr(inp, start_o),
+            CudaStorageSlice::F4(std::mem::ManuallyDrop::new(_))
+            | CudaStorageSlice::F6E2M3(std::mem::ManuallyDrop::new(_))
+            | CudaStorageSlice::F6E3M2(std::mem::ManuallyDrop::new(_))
+            | CudaStorageSlice::F8E8M0(std::mem::ManuallyDrop::new(_)) => {
                 return Err(CudaError::UnsupportedDtype {
                     dtype: self.dtype(),
                     op: "to_dtype",
@@ -1587,7 +1646,7 @@ impl BackendStorage for CudaStorage {
                 barg!(builder, *inp);
                 builder.arg(&out);
                 unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::U8(out)
+                CudaStorageSlice::U8(std::mem::ManuallyDrop::new(out))
             }
             DType::U32 => {
                 let out = unsafe { dev.alloc::<u32>(el)? };
@@ -1598,7 +1657,7 @@ impl BackendStorage for CudaStorage {
                 barg!(builder, *inp);
                 builder.arg(&out);
                 unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::U32(out)
+                CudaStorageSlice::U32(std::mem::ManuallyDrop::new(out))
             }
             DType::I64 => {
                 let out = unsafe { dev.alloc::<i64>(el)? };
@@ -1609,7 +1668,7 @@ impl BackendStorage for CudaStorage {
                 barg!(builder, *inp);
                 builder.arg(&out);
                 unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::I64(out)
+                CudaStorageSlice::I64(std::mem::ManuallyDrop::new(out))
             }
             DType::BF16 => {
                 let out = unsafe { dev.alloc::<bf16>(el)? };
@@ -1620,7 +1679,7 @@ impl BackendStorage for CudaStorage {
                 barg!(builder, *inp);
                 builder.arg(&out);
                 unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::BF16(out)
+                CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(out))
             }
             DType::F16 => {
                 let out = unsafe { dev.alloc::<f16>(el)? };
@@ -1631,7 +1690,7 @@ impl BackendStorage for CudaStorage {
                 barg!(builder, *inp);
                 builder.arg(&out);
                 unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::F16(out)
+                CudaStorageSlice::F16(std::mem::ManuallyDrop::new(out))
             }
             DType::F32 => {
                 let out = unsafe { dev.alloc::<f32>(el)? };
@@ -1642,7 +1701,7 @@ impl BackendStorage for CudaStorage {
                 barg!(builder, *inp);
                 builder.arg(&out);
                 unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::F32(out)
+                CudaStorageSlice::F32(std::mem::ManuallyDrop::new(out))
             }
             DType::F64 => {
                 let out = unsafe { dev.alloc::<f64>(el)? };
@@ -1653,7 +1712,7 @@ impl BackendStorage for CudaStorage {
                 barg!(builder, *inp);
                 builder.arg(&out);
                 unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::F64(out)
+                CudaStorageSlice::F64(std::mem::ManuallyDrop::new(out))
             }
             DType::F8E4M3 => {
                 let out = unsafe { dev.alloc::<float8::F8E4M3>(el)? };
@@ -1664,7 +1723,7 @@ impl BackendStorage for CudaStorage {
                 barg!(builder, *inp);
                 builder.arg(&out);
                 unsafe { builder.launch(cfg) }.w()?;
-                CudaStorageSlice::F8E4M3(out)
+                CudaStorageSlice::F8E4M3(std::mem::ManuallyDrop::new(out))
             }
             DType::I16 | DType::I32 => {
                 return Err(CudaError::InternalError("i16,i32 dtypes are not supported").into())
@@ -1740,50 +1799,50 @@ impl BackendStorage for CudaStorage {
             }
         }
         match &self.slice {
-            CudaStorageSlice::U8(slice) => {
+            CudaStorageSlice::U8(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::U8(cpu_storage))
             }
-            CudaStorageSlice::U32(slice) => {
+            CudaStorageSlice::U32(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::U32(cpu_storage))
             }
-            CudaStorageSlice::I16(slice) => {
+            CudaStorageSlice::I16(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::I16(cpu_storage))
             }
-            CudaStorageSlice::I32(slice) => {
+            CudaStorageSlice::I32(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::I32(cpu_storage))
             }
-            CudaStorageSlice::I64(slice) => {
+            CudaStorageSlice::I64(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::I64(cpu_storage))
             }
-            CudaStorageSlice::BF16(slice) => {
+            CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::BF16(cpu_storage))
             }
-            CudaStorageSlice::F16(slice) => {
+            CudaStorageSlice::F16(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::F16(cpu_storage))
             }
-            CudaStorageSlice::F32(slice) => {
+            CudaStorageSlice::F32(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::F32(cpu_storage))
             }
-            CudaStorageSlice::F64(slice) => {
+            CudaStorageSlice::F64(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::F64(cpu_storage))
             }
-            CudaStorageSlice::F8E4M3(slice) => {
+            CudaStorageSlice::F8E4M3(std::mem::ManuallyDrop::new(slice)) => {
                 let cpu_storage = slice.stream().clone_dtoh(slice).w()?;
                 Ok(CpuStorage::F8E4M3(cpu_storage))
             }
-            CudaStorageSlice::F4(_)
-            | CudaStorageSlice::F6E2M3(_)
-            | CudaStorageSlice::F6E3M2(_)
-            | CudaStorageSlice::F8E8M0(_) => Err(CudaError::UnsupportedDtype {
+            CudaStorageSlice::F4(std::mem::ManuallyDrop::new(_))
+            | CudaStorageSlice::F6E2M3(std::mem::ManuallyDrop::new(_))
+            | CudaStorageSlice::F6E3M2(std::mem::ManuallyDrop::new(_))
+            | CudaStorageSlice::F8E8M0(std::mem::ManuallyDrop::new(_)) => Err(CudaError::UnsupportedDtype {
                 dtype: self.dtype(),
                 op: "to_cpu_storage",
             }
@@ -2241,34 +2300,34 @@ impl BackendStorage for CudaStorage {
         let elem_count = b * m * n;
         let dev = &self.device;
         let slice = match (&self.slice, &rhs.slice) {
-            (CudaStorageSlice::BF16(lhs), CudaStorageSlice::BF16(rhs)) => {
+            (CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(lhs)), CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(rhs))) => {
                 let lhs = &lhs.slice(lhs_l.start_offset()..);
                 let rhs = &rhs.slice(rhs_l.start_offset()..);
                 let cfg = gemm_config(bf16::ONE, bf16::ZERO, (b, m, n, k), lhs_l, rhs_l)?;
                 let mut out = unsafe { dev.alloc::<bf16>(elem_count)? };
                 unsafe { gemm_strided_batched_bf16(&self.device.blas, cfg, rhs, lhs, &mut out) }
                     .w()?;
-                CudaStorageSlice::BF16(out)
+                CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(out))
             }
-            (CudaStorageSlice::F16(lhs), CudaStorageSlice::F16(rhs)) => {
+            (CudaStorageSlice::F16(std::mem::ManuallyDrop::new(lhs)), CudaStorageSlice::F16(std::mem::ManuallyDrop::new(rhs))) => {
                 let lhs = &lhs.slice(lhs_l.start_offset()..);
                 let rhs = &rhs.slice(rhs_l.start_offset()..);
                 let cfg = gemm_config(f16::ONE, f16::ZERO, (b, m, n, k), lhs_l, rhs_l)?;
                 let mut out = unsafe { dev.alloc::<f16>(elem_count)? };
                 unsafe { gemm_strided_batched_f16(&self.device.blas, cfg, rhs, lhs, &mut out) }
                     .w()?;
-                CudaStorageSlice::F16(out)
+                CudaStorageSlice::F16(std::mem::ManuallyDrop::new(out))
             }
-            (CudaStorageSlice::F32(lhs), CudaStorageSlice::F32(rhs)) => {
+            (CudaStorageSlice::F32(std::mem::ManuallyDrop::new(lhs)), CudaStorageSlice::F32(std::mem::ManuallyDrop::new(rhs))) => {
                 let lhs = &lhs.slice(lhs_l.start_offset()..);
                 let rhs = &rhs.slice(rhs_l.start_offset()..);
                 let cfg = gemm_config(1., 0., (b, m, n, k), lhs_l, rhs_l)?;
                 let mut out = unsafe { dev.alloc::<f32>(elem_count)? };
                 unsafe { gemm_strided_batched_f32(&self.device.blas, cfg, rhs, lhs, &mut out) }
                     .w()?;
-                CudaStorageSlice::F32(out)
+                CudaStorageSlice::F32(std::mem::ManuallyDrop::new(out))
             }
-            (CudaStorageSlice::F64(lhs), CudaStorageSlice::F64(rhs)) => {
+            (CudaStorageSlice::F64(std::mem::ManuallyDrop::new(lhs)), CudaStorageSlice::F64(std::mem::ManuallyDrop::new(rhs))) => {
                 let lhs = &lhs.slice(lhs_l.start_offset()..);
                 let rhs = &rhs.slice(rhs_l.start_offset()..);
                 let cfg = gemm_config(1., 0., (b, m, n, k), lhs_l, rhs_l)?;
@@ -2279,7 +2338,7 @@ impl BackendStorage for CudaStorage {
                         .gemm_strided_batched(cfg, rhs, lhs, &mut out)
                 }
                 .w()?;
-                CudaStorageSlice::F64(out)
+                CudaStorageSlice::F64(std::mem::ManuallyDrop::new(out))
             }
             _ => Err(CudaError::InternalError("dtype mismatch in matmul op"))?,
         };
@@ -2346,7 +2405,7 @@ impl BackendStorage for CudaStorage {
         let dev = &self.device;
         let ds = SlicePtrOrNull::params_from_layout(dev, src_l)?;
         match (&self.slice, &mut dst.slice) {
-            (CudaStorageSlice::BF16(src), CudaStorageSlice::BF16(dst)) => {
+            (CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::BF16(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
@@ -2362,7 +2421,7 @@ impl BackendStorage for CudaStorage {
                     unsafe { builder.launch(cfg) }.w()?;
                 }
             }
-            (CudaStorageSlice::F16(src), CudaStorageSlice::F16(dst)) => {
+            (CudaStorageSlice::F16(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::F16(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
@@ -2378,7 +2437,7 @@ impl BackendStorage for CudaStorage {
                     unsafe { builder.launch(cfg) }.w()?;
                 }
             }
-            (CudaStorageSlice::F32(src), CudaStorageSlice::F32(dst)) => {
+            (CudaStorageSlice::F32(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::F32(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
@@ -2394,7 +2453,7 @@ impl BackendStorage for CudaStorage {
                     unsafe { builder.launch(cfg) }.w()?;
                 }
             }
-            (CudaStorageSlice::U8(src), CudaStorageSlice::U8(dst)) => {
+            (CudaStorageSlice::U8(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::U8(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
@@ -2410,7 +2469,7 @@ impl BackendStorage for CudaStorage {
                     unsafe { builder.launch(cfg) }.w()?;
                 }
             }
-            (CudaStorageSlice::U32(src), CudaStorageSlice::U32(dst)) => {
+            (CudaStorageSlice::U32(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::U32(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
@@ -2426,7 +2485,7 @@ impl BackendStorage for CudaStorage {
                     unsafe { builder.launch(cfg) }.w()?;
                 }
             }
-            (CudaStorageSlice::I16(src), CudaStorageSlice::I16(dst)) => {
+            (CudaStorageSlice::I16(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::I16(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
@@ -2442,7 +2501,7 @@ impl BackendStorage for CudaStorage {
                     unsafe { builder.launch(cfg) }.w()?;
                 }
             }
-            (CudaStorageSlice::I32(src), CudaStorageSlice::I32(dst)) => {
+            (CudaStorageSlice::I32(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::I32(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
@@ -2458,7 +2517,7 @@ impl BackendStorage for CudaStorage {
                     unsafe { builder.launch(cfg) }.w()?;
                 }
             }
-            (CudaStorageSlice::I64(src), CudaStorageSlice::I64(dst)) => {
+            (CudaStorageSlice::I64(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::I64(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
@@ -2474,7 +2533,7 @@ impl BackendStorage for CudaStorage {
                     unsafe { builder.launch(cfg) }.w()?;
                 }
             }
-            (CudaStorageSlice::F64(src), CudaStorageSlice::F64(dst)) => {
+            (CudaStorageSlice::F64(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::F64(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
@@ -2490,7 +2549,7 @@ impl BackendStorage for CudaStorage {
                     unsafe { builder.launch(cfg) }.w()?;
                 }
             }
-            (CudaStorageSlice::F8E4M3(src), CudaStorageSlice::F8E4M3(dst)) => {
+            (CudaStorageSlice::F8E4M3(std::mem::ManuallyDrop::new(src)), CudaStorageSlice::F8E4M3(std::mem::ManuallyDrop::new(dst))) => {
                 let (src, mut dst) = slice_src_and_dst(src, src_l, dst, dst_offset);
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
