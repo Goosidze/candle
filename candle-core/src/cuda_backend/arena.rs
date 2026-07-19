@@ -111,12 +111,23 @@ impl FlatArena {
     pub fn cache_len(&self) -> usize {
         self.cache.read().unwrap().len()
     }
+
     pub fn freeze(&self) {
+        self.alloc_seq.store(0, Ordering::Release);
         self.is_frozen.store(true, Ordering::Release);
     }
+
     pub fn unfreeze(&self) {
         self.is_frozen.store(false, Ordering::Release);
         self.alloc_seq.store(0, Ordering::Release);
+    }
+
+    pub fn set_cache_enabled(&self, enabled: bool) {
+        self.cache_enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn is_cache_enabled(&self) -> bool {
+        self.cache_enabled.load(Ordering::Relaxed)
     }
     pub fn owns(&self, ptr_u64: u64) -> bool {
         if let Some(giant) = &self.giant {
