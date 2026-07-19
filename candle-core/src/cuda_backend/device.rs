@@ -105,7 +105,7 @@ impl CudaDevice {
         self.stream.alloc_zeros::<T>(len).w()
     }
 
-    pub unsafe fn alloc_from_giant<T: cudarc::driver::DeviceRepr>(
+    pub unsafe fn alloc_from_giant<T: cudarc::driver::DeviceRepr + cudarc::driver::ValidAsZeroBits>(
         &self,
         len: usize,
     ) -> Result<cudarc::driver::CudaSlice<T>> {
