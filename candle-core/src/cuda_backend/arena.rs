@@ -29,6 +29,7 @@ pub struct FlatArena {
     alloc_seq: AtomicUsize,
     cache: RwLock<HashMap<usize, CachedEntry>>,
     enabled: AtomicBool,
+    cache_enabled: AtomicBool,
 }
 
 struct GiantBlock {
@@ -52,6 +53,7 @@ impl FlatArena {
                 alloc_seq: AtomicUsize::new(0),
                 cache: RwLock::new(HashMap::new()),
                 enabled: AtomicBool::new(false),
+                cache_enabled: AtomicBool::new(true),
             });
         }
 
@@ -90,6 +92,7 @@ impl FlatArena {
             alloc_seq: AtomicUsize::new(0),
             cache: RwLock::new(HashMap::new()),
             enabled: AtomicBool::new(true),
+            cache_enabled: AtomicBool::new(true),
         })
     }
 
@@ -155,7 +158,16 @@ impl FlatArena {
             }
         }
 
-        // Not frozen — normal alloc, cache ptr via legal device_ptr()
+        // Not frozen — check if caching is enabled (disabled during prefill for speed)
+        if !self.is_cache_enabled() {
+            // Prefill: no caching, direct alloc (8x faster, no HashMap overhead)
+            return self
+                .stream
+                .alloc::<T>(len)
+                .map_err(|e| Error::Msg(format!("arena direct alloc failed: {e}")));
+        }
+
+        // First decode token: normal alloc + cache ptr via legal device_ptr()
         let slice: CudaSlice<T> = self
             .stream
             .alloc::<T>(len)
