@@ -61,8 +61,13 @@ impl FlatArena {
 
         // FIX: используем легальный device_ptr() вместо ptr::read (repr(Rust) ловушка!)
         // CudaSlice layout не гарантирован, нельзя читать первое поле как u64
-        let (cu_ptr, _guard) = giant_slice.device_ptr(&stream);
-        let base_ptr = cu_ptr as u64;
+        // Guard должен дропнуться до forget и до move stream
+        let base_ptr = {
+            let (cu_ptr, guard) = giant_slice.device_ptr(&stream);
+            let ptr = cu_ptr as u64;
+            drop(guard);
+            ptr
+        };
 
         // Держатель который не будет фришить дважды — ManuallyDrop
         // Мы уже получили ptr через device_ptr, теперь забываем оригинальный slice чтобы он не фришил
@@ -74,7 +79,7 @@ impl FlatArena {
         let holder = Arc::new(std::mem::ManuallyDrop::new(holder_slice));
 
         Ok(Self {
-            stream,
+            stream: stream.clone(),
             giant: Some(GiantBlock {
                 base_ptr,
                 size: giant_bytes,
@@ -155,8 +160,12 @@ impl FlatArena {
             .stream
             .alloc::<T>(len)
             .map_err(|e| Error::Msg(format!("arena cache alloc failed: {e}")))?;
-        let (cu_ptr, _guard) = slice.device_ptr(&self.stream);
-        let ptr = cu_ptr as u64;
+        let ptr = {
+            let (cu_ptr, guard) = slice.device_ptr(&self.stream);
+            let p = cu_ptr as u64;
+            drop(guard);
+            p
+        };
 
         let slice_u8: CudaSlice<u8> = unsafe { self.stream.upgrade_device_ptr(ptr, aligned_bytes) };
         let keep_alive: Arc<dyn Send + Sync> =
@@ -170,9 +179,14 @@ impl FlatArena {
             },
         );
         unsafe {
-            let (leaked_ptr, _g) = slice.device_ptr(&self.stream);
+            let ptr_u64 = {
+                let (cu_ptr, guard) = slice.device_ptr(&self.stream);
+                let p = cu_ptr as u64;
+                drop(guard);
+                p
+            };
             std::mem::forget(slice);
-            Ok(self.stream.upgrade_device_ptr(leaked_ptr as u64, len))
+            Ok(self.stream.upgrade_device_ptr(ptr_u64, len))
         }
     }
 
