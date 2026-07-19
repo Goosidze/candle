@@ -1910,7 +1910,7 @@ impl BackendStorage for CudaStorage {
         }
         let l_out = params.l_out();
         let dst_el = params.c_out * l_out * params.b_size;
-        let slice = match (&self.slice, &kernel.slice) {
+        let slice = match (&*self.slice, &*kernel.slice) {
             (S::U8(inp), S::U8(k)) => {
                 let inp = &inp.slice(inp_l.start_offset()..);
                 let k = &k.slice(kernel_l.start_offset()..);
@@ -2095,7 +2095,7 @@ impl BackendStorage for CudaStorage {
         }
         let (out_w, out_h) = (params.out_w(), params.out_h());
         let dst_el = params.c_out * out_w * out_h * params.b_size;
-        let slice = match (&self.slice, &kernel.slice) {
+        let slice = match (&*self.slice, &*kernel.slice) {
             (S::U8(inp), S::U8(k)) => {
                 let inp = &inp.slice(inp_l.start_offset()..);
                 let k = &k.slice(kernel_l.start_offset()..);

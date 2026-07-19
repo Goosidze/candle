@@ -176,9 +176,7 @@ impl candle::CustomOp3 for RotaryEmbI {
                 s3.dtype()
             ),
         };
-        let dst = candle::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
+        let dst = candle::cuda_backend::CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: dev.clone(),
         };
         Ok((dst, l1.shape().clone()))
     }
@@ -481,9 +479,7 @@ impl candle::CustomOp3 for RotaryEmb {
                 s3.dtype()
             ),
         };
-        let dst = candle::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
+        let dst = candle::cuda_backend::CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: dev.clone(),
         };
         Ok((dst, l1.shape().clone()))
     }
@@ -755,9 +751,7 @@ impl candle::CustomOp3 for RotaryEmbThd {
                 s3.dtype()
             ),
         };
-        let dst = candle::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
+        let dst = candle::cuda_backend::CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: dev.clone(),
         };
         Ok((dst, l1.shape().clone()))
     }

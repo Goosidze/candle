@@ -127,9 +127,7 @@ impl candle::CustomOp1 for Sigmoid {
 
         let dev = storage.device();
         let slice = S.map(&*storage.slice, dev, layout)?;
-        let dst = candle::CudaStorage {
-            slice,
-            device: dev.clone(),
+        let dst = candle::CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: dev.clone(),
         };
         Ok((dst, layout.shape().clone()))
     }
@@ -379,9 +377,7 @@ impl candle::CustomOp1 for SoftmaxLastDim {
         use candle::backend::BackendStorage;
         let dev = storage.device();
         let slice = S.map(&*storage.slice, dev, layout)?;
-        let dst = candle::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
+        let dst = candle::cuda_backend::CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: dev.clone(),
         };
         Ok((dst, layout.shape().clone()))
     }
@@ -600,9 +596,7 @@ impl candle::CustomOp2 for RmsNorm {
         use candle::backend::BackendStorage;
         let dev = s1.device();
         let slice = S { eps: self.eps }.map(&s1.slice, l1, &s2.slice, l2, dev)?;
-        let dst = candle::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
+        let dst = candle::cuda_backend::CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: dev.clone(),
         };
         Ok((dst, l1.shape().clone()))
     }
@@ -845,9 +839,7 @@ impl candle::CustomOp3 for LayerNorm {
         use candle::backend::BackendStorage;
         let dev = s1.device();
         let slice = S { eps: self.eps }.map(&s1.slice, l1, &s2.slice, l2, &s3.slice, l3, dev)?;
-        let dst = candle::cuda_backend::CudaStorage {
-            slice,
-            device: dev.clone(),
+        let dst = candle::cuda_backend::CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: dev.clone(),
         };
         Ok((dst, l1.shape().clone()))
     }
