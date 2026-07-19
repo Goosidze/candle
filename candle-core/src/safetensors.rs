@@ -248,9 +248,7 @@ impl Tensor {
                             DType::F8E8M0 => crate::cuda_backend::CudaStorageSlice::F8E8M0(slice),
                             _ => unreachable!(),
                         };
-                        let storage = crate::cuda_backend::CudaStorage {
-                            slice,
-                            device: device.clone(),
+                        let storage = crate::cuda_backend::CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: device.clone(),
                         };
                         Storage::Cuda(storage)
                     }
@@ -352,9 +350,7 @@ fn convert_dummy(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
                 DType::F8E8M0 => crate::cuda_backend::CudaStorageSlice::F8E8M0(slice),
                 _ => unreachable!(),
             };
-            let storage = crate::cuda_backend::CudaStorage {
-                slice,
-                device: device.clone(),
+            let storage = crate::cuda_backend::CudaStorage { slice: std::mem::ManuallyDrop::new(slice), device: device.clone(),
             };
             Storage::Cuda(storage)
         }

@@ -1718,10 +1718,7 @@ impl BackendStorage for CudaStorage {
                 )
             }
         };
-        Ok(Self {
-            slice,
-            device: dev.clone(),
-        })
+        Ok(Self { slice: std::mem::ManuallyDrop::new(slice), device: dev.clone() })
     }
 
     fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
