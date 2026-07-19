@@ -133,6 +133,11 @@ impl FlatArena {
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
+
+    pub fn reset_seq(&self) {
+        self.alloc_seq.store(0, Ordering::Release);
+    }
+
     pub fn owns(&self, ptr_u64: u64) -> bool {
         if let Some(giant) = &self.giant {
             ptr_u64 >= giant.base_ptr && ptr_u64 < giant.base_ptr + giant.size as u64

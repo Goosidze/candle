@@ -136,6 +136,11 @@ impl CudaDevice {
             arena.set_enabled(enabled);
         }
     }
+    pub fn reset_arena_seq(&self) {
+        if let Some(arena) = &self.arena {
+            arena.reset_seq();
+        }
+    }
     pub fn freeze_arena(&self) {
         if let Some(arena) = &self.arena {
             arena.freeze();
