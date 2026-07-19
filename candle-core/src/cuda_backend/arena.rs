@@ -1,12 +1,12 @@
 //! Flat Arena — статический bump аллокатор для CUDA Graphs
-//! Минимальная версия для компиляции без tracing
+//! Фикс: используем DevicePtr::device_ptr() вместо ptr::read (repr(Rust) ловушка)
 
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, RwLock,
 };
-use cudarc::driver::{CudaSlice, CudaStream, DeviceRepr};
+use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DeviceRepr};
 use crate::{Result, Error};
 
 const ALIGNMENT: usize = 256;
@@ -34,7 +34,6 @@ pub struct FlatArena {
 struct GiantBlock {
     base_ptr: u64,
     size: usize,
-    // Keep alive via ManuallyDrop slice that we will free manually on Drop
     _holder: Arc<std::mem::ManuallyDrop<CudaSlice<u8>>>,
 }
 
@@ -56,20 +55,21 @@ impl FlatArena {
             });
         }
 
-        // Allocate giant block
+        // Allocate giant block once via normal alloc
         let giant_slice: CudaSlice<u8> = unsafe { stream.alloc::<u8>(giant_bytes) }
             .map_err(|e| Error::Msg(format!("arena giant alloc {giant_bytes} failed: {e}")))?;
 
-        // Leak to get raw ptr, then upgrade back to holder that won't free twice
-        // SAFETY: CudaSlice first field is CUdeviceptr (u64)
-        let base_ptr = unsafe {
-            let ptr_u64 = std::ptr::read(&giant_slice as *const CudaSlice<u8> as *const u64);
-            // Prevent original slice from freeing
-            std::mem::forget(giant_slice);
-            ptr_u64
-        };
+        // FIX: используем легальный device_ptr() вместо ptr::read (repr(Rust) ловушка!)
+        // CudaSlice layout не гарантирован, нельзя читать первое поле как u64
+        let (cu_ptr, _guard) = giant_slice.device_ptr(&stream);
+        let base_ptr = cu_ptr as u64;
 
-        // Create holder that will free on Drop of arena (via cuMemFree manually)
+        // Держатель который не будет фришить дважды — ManuallyDrop
+        // Мы уже получили ptr через device_ptr, теперь забываем оригинальный slice чтобы он не фришил
+        // А holder будет фришить через cuMemFree в Drop FlatArena
+        unsafe {
+            std::mem::forget(giant_slice);
+        }
         let holder_slice: CudaSlice<u8> = unsafe { stream.upgrade_device_ptr(base_ptr, giant_bytes) };
         let holder = Arc::new(std::mem::ManuallyDrop::new(holder_slice));
 
@@ -121,6 +121,8 @@ impl FlatArena {
         }
     }
 
+    // General alloc — НЕ из giant, обычный alloc + кеш для детерминизма
+    // Это фиксит OOM: веса модели 7.1GB не должны идти в 2GB giant
     pub unsafe fn alloc<T: DeviceRepr>(&self, len: usize) -> Result<CudaSlice<T>> {
         let bytes = len * std::mem::size_of::<T>();
         let aligned_bytes = align_up(bytes, ALIGNMENT);
@@ -148,14 +150,14 @@ impl FlatArena {
             }
         }
 
-        // Not frozen — normal alloc (NOT from giant, giant is only for explicit KV pool allocs)
-        // This fixes model load OOM / invalid argument because model weights (9GB) don't fit into 2GB giant
+        // Not frozen — normal alloc, cache ptr via legal device_ptr()
         let slice: CudaSlice<T> = self
             .stream
             .alloc::<T>(len)
             .map_err(|e| Error::Msg(format!("arena cache alloc failed: {e}")))?;
-        let ptr = unsafe { std::ptr::read(&slice as *const CudaSlice<T> as *const u64) };
-        // Keep alive via upgraded u8 slice in Arc
+        let (cu_ptr, _guard) = slice.device_ptr(&self.stream);
+        let ptr = cu_ptr as u64;
+
         let slice_u8: CudaSlice<u8> = unsafe { self.stream.upgrade_device_ptr(ptr, aligned_bytes) };
         let keep_alive: Arc<dyn Send + Sync> =
             Arc::new(std::mem::ManuallyDrop::new(slice_u8)) as Arc<dyn Send + Sync>;
@@ -168,14 +170,13 @@ impl FlatArena {
             },
         );
         unsafe {
-            let leaked_ptr = std::ptr::read(&slice as *const CudaSlice<T> as *const u64);
+            let (leaked_ptr, _g) = slice.device_ptr(&self.stream);
             std::mem::forget(slice);
-            Ok(self.stream.upgrade_device_ptr(leaked_ptr, len))
+            Ok(self.stream.upgrade_device_ptr(leaked_ptr as u64, len))
         }
     }
 
-    /// Explicit giant bump alloc — only for KV pools (k_pages/v_pages/static_out_buf)
-    /// These never get freed individually, only when giant block freed
+    // Explicit giant bump — only for KV pools (fixed address for CUDA Graphs)
     pub unsafe fn alloc_from_giant<T: DeviceRepr>(&self, len: usize) -> Result<CudaSlice<T>> {
         let bytes = len * std::mem::size_of::<T>();
         let aligned_bytes = align_up(bytes, ALIGNMENT);
@@ -192,11 +193,9 @@ impl FlatArena {
             }
             let ptr = giant.base_ptr + aligned_offset as u64;
             let slice: CudaSlice<T> = self.stream.upgrade_device_ptr(ptr, len);
-            // For giant allocs we don't need to cache for frozen (they are fixed anyway)
-            // But we also don't want them to free individually, so we keep giant holder alive
             Ok(slice)
         } else {
-            // No giant — fallback to normal alloc
+            // No giant — fallback to normal cache alloc
             self.alloc::<T>(len)
         }
     }
