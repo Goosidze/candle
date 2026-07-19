@@ -147,25 +147,68 @@ impl FlatArena {
         let aligned_bytes = align_up(bytes, ALIGNMENT);
         let seq = self.alloc_seq.fetch_add(1, Ordering::Relaxed);
 
+        let debug = std::env::var("SENIOR_AGENT_ARENA_DEBUG").map(|v| !v.is_empty() && v != "0").unwrap_or(false);
+        let strict = std::env::var("SENIOR_AGENT_ARENA_STRICT").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(true);
+
+        if debug {
+            eprintln!("[ArenaDebug] alloc seq={} len={} bytes={} aligned={} frozen={} cache_len={}", seq, len, bytes, aligned_bytes, self.is_frozen(), self.cache.read().unwrap().len());
+        }
+
         if self.is_frozen() {
-            let cache = self.cache.read().unwrap();
-            if let Some(entry) = cache.get(&seq) {
-                if entry.bytes < aligned_bytes {
-                    crate::bail!(
-                        "FlatArena frozen miss: seq={} expected bytes={} got cached bytes={} — forward not deterministic",
-                        seq,
-                        aligned_bytes,
-                        entry.bytes
-                    );
+            // Try cache first
+            {
+                let cache = self.cache.read().unwrap();
+                if let Some(entry) = cache.get(&seq) {
+                    if entry.bytes >= aligned_bytes {
+                        let slice: CudaSlice<T> = self.stream.upgrade_device_ptr(entry.ptr, len);
+                        if debug {
+                            eprintln!("[ArenaDebug] frozen HIT seq={} ptr={:#x} bytes={}", seq, entry.ptr, aligned_bytes);
+                        }
+                        return Ok(slice);
+                    } else {
+                        eprintln!("[ArenaDebug] FROZEN SIZE MISMATCH seq={} expected={} got={} — forward not deterministic!", seq, aligned_bytes, entry.bytes);
+                        if strict {
+                            crate::bail!(
+                                "FlatArena frozen miss: seq={} expected bytes={} got cached bytes={} — forward not deterministic",
+                                seq,
+                                aligned_bytes,
+                                entry.bytes
+                            );
+                        }
+                        // Lenient: fall through to alloc new and update cache
+                    }
+                } else {
+                    eprintln!("[ArenaDebug] FROZEN CACHE MISS seq={} bytes={} — forward not deterministic (cache_len={})", seq, aligned_bytes, cache.len());
+                    if strict {
+                        crate::bail!(
+                            "FlatArena frozen cache miss: seq={} bytes={} — forward not deterministic",
+                            seq,
+                            aligned_bytes
+                        );
+                    }
+                    // Lenient: fall through
                 }
-                let slice: CudaSlice<T> = self.stream.upgrade_device_ptr(entry.ptr, len);
-                return Ok(slice);
-            } else {
-                crate::bail!(
-                    "FlatArena frozen cache miss: seq={} bytes={} — forward not deterministic",
-                    seq,
-                    aligned_bytes
-                );
+            }
+            // Lenient mode: allocate new and update cache
+            if !strict {
+                let slice: CudaSlice<T> = self.stream.alloc::<T>(len).map_err(|e| crate::Error::Msg(format!("arena lenient alloc failed: {e}")))?;
+                let (cu_ptr, guard) = slice.device_ptr(&self.stream);
+                let ptr = cu_ptr as u64;
+                drop(guard);
+                let slice_u8: CudaSlice<u8> = unsafe { self.stream.upgrade_device_ptr(ptr, aligned_bytes) };
+                let keep_alive: Arc<dyn Send + Sync> = Arc::new(std::mem::ManuallyDrop::new(slice_u8)) as Arc<dyn Send + Sync>;
+                self.cache.write().unwrap().insert(seq, CachedEntry { ptr, bytes: aligned_bytes, _keep_alive: keep_alive });
+                unsafe {
+                    let (leaked_ptr, guard) = slice.device_ptr(&self.stream);
+                    let p = leaked_ptr as u64;
+                    drop(guard);
+                    std::mem::forget(slice);
+                    let new_slice = self.stream.upgrade_device_ptr(p, len);
+                    if debug {
+                        eprintln!("[ArenaDebug] frozen LENIENT alloc seq={} ptr={:#x} bytes={}", seq, p, aligned_bytes);
+                    }
+                    return Ok(new_slice);
+                }
             }
         }
 
