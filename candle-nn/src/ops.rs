@@ -126,7 +126,7 @@ impl candle::CustomOp1 for Sigmoid {
         }
 
         let dev = storage.device();
-        let slice = S.map(&storage.slice, dev, layout)?;
+        let slice = S.map(&*storage.slice, dev, layout)?;
         let dst = candle::CudaStorage {
             slice,
             device: dev.clone(),
@@ -378,7 +378,7 @@ impl candle::CustomOp1 for SoftmaxLastDim {
 
         use candle::backend::BackendStorage;
         let dev = storage.device();
-        let slice = S.map(&storage.slice, dev, layout)?;
+        let slice = S.map(&*storage.slice, dev, layout)?;
         let dst = candle::cuda_backend::CudaStorage {
             slice,
             device: dev.clone(),
