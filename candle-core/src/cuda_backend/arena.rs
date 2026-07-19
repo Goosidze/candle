@@ -115,6 +115,9 @@ impl FlatArena {
     pub fn freeze(&self) {
         self.alloc_seq.store(0, Ordering::Release);
         self.is_frozen.store(true, Ordering::Release);
+        unsafe {
+            self.stream.context().disable_event_tracking();
+        }
     }
 
     pub fn unfreeze(&self) {
@@ -158,6 +161,11 @@ impl FlatArena {
 
         let debug = std::env::var("SENIOR_AGENT_ARENA_DEBUG").map(|v| !v.is_empty() && v != "0").unwrap_or(false);
         let strict = std::env::var("SENIOR_AGENT_ARENA_STRICT").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(true);
+
+        // Ensure event tracking disabled during frozen allocs (for CUDA Graph capture)
+        if self.is_frozen() {
+            unsafe { self.stream.context().disable_event_tracking(); }
+        }
 
         if debug {
             eprintln!("[ArenaDebug] alloc seq={} len={} bytes={} aligned={} frozen={} cache_len={}", seq, len, bytes, aligned_bytes, self.is_frozen(), self.cache.read().unwrap().len());
