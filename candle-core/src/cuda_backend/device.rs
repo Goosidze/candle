@@ -105,6 +105,21 @@ impl CudaDevice {
         self.stream.alloc_zeros::<T>(len).w()
     }
 
+    pub unsafe fn alloc_from_giant<T: cudarc::driver::DeviceRepr>(
+        &self,
+        len: usize,
+    ) -> Result<cudarc::driver::CudaSlice<T>> {
+        if let Some(arena) = &self.arena {
+            if arena.is_enabled() {
+                let mut slice = arena.alloc_from_giant::<T>(len)?;
+                self.stream.memset_zeros(&mut slice).w()?;
+                return Ok(slice);
+            }
+        }
+        // Fallback to normal alloc_zeros
+        self.stream.alloc_zeros::<T>(len).w()
+    }
+
     // === V2 Arena API ===
     pub fn freeze_arena(&self) {
         if let Some(arena) = &self.arena {

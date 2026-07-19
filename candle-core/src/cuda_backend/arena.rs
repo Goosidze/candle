@@ -148,13 +148,43 @@ impl FlatArena {
             }
         }
 
+        // Not frozen — normal alloc (NOT from giant, giant is only for explicit KV pool allocs)
+        // This fixes model load OOM / invalid argument because model weights (9GB) don't fit into 2GB giant
+        let slice: CudaSlice<T> = self
+            .stream
+            .alloc::<T>(len)
+            .map_err(|e| Error::Msg(format!("arena cache alloc failed: {e}")))?;
+        let ptr = unsafe { std::ptr::read(&slice as *const CudaSlice<T> as *const u64) };
+        // Keep alive via upgraded u8 slice in Arc
+        let slice_u8: CudaSlice<u8> = unsafe { self.stream.upgrade_device_ptr(ptr, aligned_bytes) };
+        let keep_alive: Arc<dyn Send + Sync> =
+            Arc::new(std::mem::ManuallyDrop::new(slice_u8)) as Arc<dyn Send + Sync>;
+        self.cache.write().unwrap().insert(
+            seq,
+            CachedEntry {
+                ptr,
+                bytes: aligned_bytes,
+                _keep_alive: keep_alive,
+            },
+        );
+        unsafe {
+            let leaked_ptr = std::ptr::read(&slice as *const CudaSlice<T> as *const u64);
+            std::mem::forget(slice);
+            Ok(self.stream.upgrade_device_ptr(leaked_ptr, len))
+        }
+    }
+
+    /// Explicit giant bump alloc — only for KV pools (k_pages/v_pages/static_out_buf)
+    /// These never get freed individually, only when giant block freed
+    pub unsafe fn alloc_from_giant<T: DeviceRepr>(&self, len: usize) -> Result<CudaSlice<T>> {
+        let bytes = len * std::mem::size_of::<T>();
+        let aligned_bytes = align_up(bytes, ALIGNMENT);
         if let Some(giant) = &self.giant {
-            // Bump from giant
             let current_offset = self.offset.fetch_add(aligned_bytes, Ordering::Relaxed);
             let aligned_offset = align_up(current_offset, ALIGNMENT);
             if aligned_offset + aligned_bytes > giant.size {
                 crate::bail!(
-                    "FlatArena OOM: offset {} + {} > size {}",
+                    "FlatArena giant OOM: offset {} + {} > size {}",
                     aligned_offset,
                     aligned_bytes,
                     giant.size
@@ -162,45 +192,12 @@ impl FlatArena {
             }
             let ptr = giant.base_ptr + aligned_offset as u64;
             let slice: CudaSlice<T> = self.stream.upgrade_device_ptr(ptr, len);
-            let keep_alive: Arc<dyn Send + Sync> =
-                giant._holder.clone() as Arc<dyn Send + Sync>;
-            self.cache.write().unwrap().insert(
-                seq,
-                CachedEntry {
-                    ptr,
-                    bytes: aligned_bytes,
-                    _keep_alive: keep_alive,
-                },
-            );
+            // For giant allocs we don't need to cache for frozen (they are fixed anyway)
+            // But we also don't want them to free individually, so we keep giant holder alive
             Ok(slice)
         } else {
-            // Fallback: individual alloc and cache raw ptr
-            let slice: CudaSlice<T> = self
-                .stream
-                .alloc::<T>(len)
-                .map_err(|e| Error::Msg(format!("arena cache alloc failed: {e}")))?;
-            let ptr = unsafe {
-                std::ptr::read(&slice as *const CudaSlice<T> as *const u64)
-            };
-            // Keep slice alive via ManuallyDrop in Arc
-            let slice_u8: CudaSlice<u8> = unsafe { self.stream.upgrade_device_ptr(ptr, aligned_bytes) };
-            let keep_alive: Arc<dyn Send + Sync> =
-                Arc::new(std::mem::ManuallyDrop::new(slice_u8)) as Arc<dyn Send + Sync>;
-            self.cache.write().unwrap().insert(
-                seq,
-                CachedEntry {
-                    ptr,
-                    bytes: aligned_bytes,
-                    _keep_alive: keep_alive,
-                },
-            );
-            // Return original slice (will be freed on drop, but we also keep a copy via keep_alive)
-            // To avoid double free, forget original and return upgraded copy
-            unsafe {
-                let leaked_ptr = std::ptr::read(&slice as *const CudaSlice<T> as *const u64);
-                std::mem::forget(slice);
-                Ok(self.stream.upgrade_device_ptr(leaked_ptr, len))
-            }
+            // No giant — fallback to normal alloc
+            self.alloc::<T>(len)
         }
     }
 
