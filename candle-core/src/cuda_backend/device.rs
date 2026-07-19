@@ -95,18 +95,9 @@ impl CudaDevice {
     ) -> Result<cudarc::driver::CudaSlice<T>> {
         if let Some(arena) = &self.arena {
             if arena.is_enabled() {
-                // alloc via arena (already zeroed? giant block is zeroed by alloc_zeros)
-                // For simplicity, alloc then memset zero if needed
-                let slice = unsafe { arena.alloc::<T>(len) }?;
-                // memset zero — stream.memset_zeros
-                // SAFETY: slice is valid
-                unsafe {
-                    // cudarc 0.19 has memset
-                    // self.stream.memset_zeros(&mut slice.clone())? — but clone is deep copy
-                    // Use direct memset via driver
-                    // For now, use alloc_zeros path if not frozen, else assume already zeroed? 
-                    // We'll just return as is (bump alloc from giant is not zeroed, need zero)
-                }
+                let mut slice = unsafe { arena.alloc::<T>(len) }?;
+                // Zero it — important for KV pages which expect zeros
+                self.stream.memset_zeros(&mut slice).w()?;
                 return Ok(slice);
             }
         }
@@ -151,6 +142,18 @@ impl CudaDevice {
 
     pub fn is_arena_frozen(&self) -> bool {
         self.arena.as_ref().map(|a| a.is_frozen()).unwrap_or(false)
+    }
+
+    pub fn arena_seq(&self) -> usize {
+        self.arena.as_ref().map(|a| a.seq()).unwrap_or(0)
+    }
+
+    pub fn arena_stats(&self) -> String {
+        if let Some(arena) = &self.arena {
+            format!("enabled={} frozen={} seq={} offset={} cache={}", arena.is_enabled(), arena.is_frozen(), arena.seq(), arena.offset(), arena.cache_len())
+        } else {
+            "arena disabled".to_string()
+        }
     }
 
     pub fn enable_cuda_graph_htod_cache(&self) -> CudaGraphHtodCacheGuard {

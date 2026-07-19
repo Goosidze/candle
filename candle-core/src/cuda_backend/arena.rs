@@ -139,6 +139,18 @@ impl FlatArena {
         self.is_frozen.load(Ordering::Acquire)
     }
 
+    pub fn seq(&self) -> usize {
+        self.alloc_seq.load(Ordering::Relaxed)
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset.load(Ordering::Relaxed)
+    }
+
+    pub fn cache_len(&self) -> usize {
+        self.cache.read().unwrap().len()
+    }
+
     pub fn freeze(&self) {
         self.is_frozen.store(true, Ordering::Release);
         let cache_len = self.cache.read().unwrap().len();
