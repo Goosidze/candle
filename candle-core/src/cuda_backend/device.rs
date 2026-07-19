@@ -131,6 +131,11 @@ impl CudaDevice {
             arena.set_cache_enabled(enabled);
         }
     }
+    pub fn set_arena_enabled(&self, enabled: bool) {
+        if let Some(arena) = &self.arena {
+            arena.set_enabled(enabled);
+        }
+    }
     pub fn freeze_arena(&self) {
         if let Some(arena) = &self.arena {
             arena.freeze();
