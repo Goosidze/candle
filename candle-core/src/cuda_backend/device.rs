@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use super::{arena::FlatArena, CudaError, CudaStorage, CudaStorageSlice, WrapErr};
+use super::{CudaError, CudaStorage, CudaStorageSlice, WrapErr};
 
 /// Unique identifier for cuda devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -65,8 +65,7 @@ pub struct CudaDevice {
     pub(crate) blas: Arc<cudarc::cublas::CudaBlas>,
     curand: Arc<Mutex<CudaRng>>,
     seed_value: Arc<RwLock<u64>>,
-    // === V2 Static Arena ===
-    arena: Option<Arc<FlatArena>>,
+    arena: Option<Arc<super::arena::FlatArena>>,
 }
 
 impl std::fmt::Debug for CudaDevice {
@@ -83,6 +82,8 @@ impl CudaDevice {
     ) -> Result<cudarc::driver::CudaSlice<T>> {
         if let Some(arena) = &self.arena {
             if arena.is_enabled() {
+                // V2: if frozen, return cached addr, else bump alloc
+                // This avoids cudaMalloc during CUDA Graph capture
                 return arena.alloc::<T>(len);
             }
         }
@@ -96,7 +97,7 @@ impl CudaDevice {
         if let Some(arena) = &self.arena {
             if arena.is_enabled() {
                 let mut slice = unsafe { arena.alloc::<T>(len) }?;
-                // Zero it — important for KV pages which expect zeros
+                // zero it
                 self.stream.memset_zeros(&mut slice).w()?;
                 return Ok(slice);
             }
@@ -105,29 +106,16 @@ impl CudaDevice {
     }
 
     // === V2 Arena API ===
-    pub fn init_arena(&self, giant_bytes: usize) -> Result<()> {
-        if let Some(arena) = &self.arena {
-            // already exists, reset?
-            arena.reset();
-            let _ = giant_bytes;
-            Ok(())
-        } else {
-            Ok(())
-        }
-    }
-
     pub fn freeze_arena(&self) {
         if let Some(arena) = &self.arena {
             arena.freeze();
         }
     }
-
     pub fn unfreeze_arena(&self) {
         if let Some(arena) = &self.arena {
             arena.unfreeze();
         }
     }
-
     pub fn arena_owns(&self, ptr_u64: u64) -> bool {
         if let Some(arena) = &self.arena {
             arena.owns(ptr_u64)
@@ -135,22 +123,25 @@ impl CudaDevice {
             false
         }
     }
-
     pub fn is_arena_enabled(&self) -> bool {
         self.arena.as_ref().map(|a| a.is_enabled()).unwrap_or(false)
     }
-
     pub fn is_arena_frozen(&self) -> bool {
         self.arena.as_ref().map(|a| a.is_frozen()).unwrap_or(false)
     }
-
     pub fn arena_seq(&self) -> usize {
         self.arena.as_ref().map(|a| a.seq()).unwrap_or(0)
     }
-
     pub fn arena_stats(&self) -> String {
         if let Some(arena) = &self.arena {
-            format!("enabled={} frozen={} seq={} offset={} cache={}", arena.is_enabled(), arena.is_frozen(), arena.seq(), arena.offset(), arena.cache_len())
+            format!(
+                "enabled={} frozen={} seq={} offset={} cache={}",
+                arena.is_enabled(),
+                arena.is_frozen(),
+                arena.seq(),
+                arena.offset(),
+                arena.cache_len()
+            )
         } else {
             "arena disabled".to_string()
         }
@@ -466,32 +457,25 @@ impl CudaDevice {
         let module_store = ModuleStore {
             mdls: [const { None }; kernels::ALL_IDS.len()],
         };
-        // === V2 Arena init ===
+        // V2 Arena init — env gated, no tracing crate to avoid compile error
         let arena = {
             let enabled = std::env::var("SENIOR_AGENT_STATIC_ARENA")
                 .map(|v| !v.is_empty() && v != "0" && !v.to_lowercase().contains("false"))
-                .unwrap_or(false); // по умолчанию выкл, включаем через env
+                .unwrap_or(false);
             if enabled {
                 let gb: usize = std::env::var("SENIOR_AGENT_ARENA_GB")
                     .ok()
                     .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(2); // default 2GB, на 12GB карте 2-2.5GB оптимально
+                    .unwrap_or(2);
                 let bytes = gb * 1024 * 1024 * 1024;
-                match FlatArena::new(stream.clone(), bytes) {
-                    Ok(a) => {
-                        tracing::info!("[FlatArena] enabled, {} GiB", gb);
-                        Some(Arc::new(a))
-                    }
-                    Err(e) => {
-                        tracing::warn!("[FlatArena] failed to init {} GiB arena: {e}, falling back to normal alloc", gb);
-                        None
-                    }
+                match super::arena::FlatArena::new(stream.clone(), bytes) {
+                    Ok(a) => Some(Arc::new(a)),
+                    Err(_) => None,
                 }
             } else {
                 None
             }
         };
-
         Ok(Self {
             id: DeviceId::new(),
             context,
